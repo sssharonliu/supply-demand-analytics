@@ -5,4 +5,3 @@ pymysql
 prophet
 matplotlib
 seaborn
-EOF
