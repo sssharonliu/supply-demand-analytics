@@ -1,0 +1,11 @@
+# Ignore data files (Do not push large datasets to GitHub)
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+
+# Ignore system and cache files
+.DS_Store
+__pycache__/
+.ipynb_checkpoints/
+EOF

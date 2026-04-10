@@ -1,0 +1,8 @@
+pandas
+numpy
+sqlalchemy
+pymysql
+prophet
+matplotlib
+seaborn
+EOF
