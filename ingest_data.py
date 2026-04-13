@@ -20,7 +20,6 @@ def run_ingestion():
         password = 'password123' 
         host = 'localhost'
         db = 'supply_chain_db' 
-        /usr/local/bin/python3 ingest_data.py
         engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db}")
 
         # 4. Push DataFrame to MySQL

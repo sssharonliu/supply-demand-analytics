@@ -3,6 +3,7 @@ import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import prophet
 import seaborn as sns
 from sqlalchemy import create_engine, text
 
@@ -32,7 +33,6 @@ def get_engine():
 # ---------------------------------------------------------------------------
 def chart_demand_volatility(engine):
     print("[1/3] Generating Demand Volatility chart...")
-
     sql = text("""
         WITH monthly_sales AS (
             SELECT
