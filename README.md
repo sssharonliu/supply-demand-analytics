@@ -92,8 +92,8 @@ Raw ERP / CSV Export (180K+ order records)
                             │
                             ▼
               ┌─────────────────────────┐
-              │     dashboards/*.png    │  ← 01 Demand Volatility
-              │     (Policy Outputs)    │    02 Supply Reliability
+              │      assets/*.png       │  ← 01 Demand Volatility
+              │   (Committed Outputs)   │    02 Supply Reliability
               │                         │    03 Inventory Health
               │                         │    04 ROP Recommendations
               └─────────────────────────┘
@@ -105,7 +105,7 @@ Raw ERP / CSV Export (180K+ order records)
 
 ### 01 — Demand Volatility: Replenishment Strategy Segmentation
 
-![Demand Volatility](dashboards/01_demand_volatility.png)
+![Demand Volatility](assets/01_demand_volatility.png)
 
 **Executive Summary:**
 The Coefficient of Variation ($CV = \sigma / \mu$) is the primary metric for segmenting the product portfolio into replenishment strategies. A high CV indicates that average demand is a poor predictor of future demand — meaning any inventory policy built on simple averages will routinely result in either excess stock or stockouts.
@@ -116,7 +116,7 @@ This analysis reveals a clear bifurcation in the portfolio. **Cameras** emerge a
 
 ### 02 — Supply Reliability: Lead Time Risk & Safety Stock Uplift
 
-![Supply Reliability](dashboards/02_supply_reliability.png)
+![Supply Reliability](assets/02_supply_reliability.png)
 
 **Executive Summary:**
 Supply reliability is the second variable in the Safety Stock equation — and this analysis uncovers a critical vulnerability. **Second Class shipping carries a 79.8% late delivery rate** across all completed orders, meaning that for nearly four in five shipments, actual transit time exceeded the scheduled lead time used in procurement planning.
@@ -127,7 +127,7 @@ This has a direct and computable impact on inventory policy. When lead time is u
 
 ### 03 — Inventory Health: Working Capital Efficiency Matrix
 
-![Inventory Health](dashboards/03_inventory_health.png)
+![Inventory Health](assets/03_inventory_health.png)
 
 **Executive Summary:**
 The Sales vs. Profitability scatter matrix surfaces the working capital efficiency profile of every product category simultaneously. The analytical framework maps categories into four strategic quadrants: high-sales/high-margin (core portfolio), high-sales/low-margin (volume traps), low-sales/high-margin (niche value), and low-sales/low-margin (candidates for rationalization).
@@ -138,7 +138,7 @@ Categories appearing **at or below the zero-profit line** (red dashed) represent
 
 ### 04 — Reorder Point (ROP) Recommendations
 
-![ROP Recommendations](dashboards/04_inventory_recommendations.png)
+![ROP Recommendations](assets/04_inventory_recommendations.png)
 
 **Executive Summary:**
 This stacked bar chart is the direct output of the inventory policy engine (`inventory_optimization.py`). Each bar represents the total Reorder Point for a category, decomposed into two distinct components: the **Cycle Stock** (steel blue) — units consumed during a normal replenishment lead time — and the **Safety Stock** (coral) — the statistical buffer required to maintain a 95% service level against demand variability and lead time uncertainty.
@@ -220,13 +220,14 @@ python demand_forecasting.py    # Charts 05–06 (Prophet forecast)
 Supply-Demand-Analytics/
 ├── data/
 │   └── raw/                              # Source CSV (not tracked in git)
-├── dashboards/                           # Generated outputs (not tracked in git)
+├── assets/                               # Committed chart images (rendered in README)
 │   ├── 01_demand_volatility.png          # CV-based replenishment segmentation
 │   ├── 02_supply_reliability.png         # Late delivery rate by shipping mode
 │   ├── 03_inventory_health.png           # Sales vs. margin working capital matrix
 │   ├── 04_inventory_recommendations.png  # ROP stacked bar — cycle + safety stock
 │   ├── 05_demand_forecast.png            # 90-day Prophet forecast with CI
-│   ├── 06_seasonality_analysis.png       # Weekly & yearly seasonality components
+│   └── 06_seasonality_analysis.png       # Weekly & yearly seasonality components
+├── dashboards/                           # Local script outputs (not tracked in git)
 │   └── inventory_policy.csv             # Full ROP & safety stock table (all categories)
 ├── sql/
 │   ├── 01_demand_volatility.sql          # Reference queries
