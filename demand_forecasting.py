@@ -17,31 +17,19 @@ import warnings
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 warnings.filterwarnings("ignore")  # suppress Prophet/Stan verbosity
 
 # ── Working directory ─────────────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
+from config import get_engine, OUTPUT_DIR
+
 # ── Configuration ─────────────────────────────────────────────────────────────
-DB_USER     = "root"
-DB_PASSWORD = "password123"
-DB_HOST     = "localhost"
-DB_NAME     = "supply_chain_db"
-OUTPUT_DIR  = "dashboards"
 FORECAST_DAYS = 90
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Database helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def get_engine():
-    url = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
-    return create_engine(url)
 
 
 def fetch_top_category(engine) -> str:
@@ -107,11 +95,17 @@ def build_and_run_model(df: pd.DataFrame) -> tuple:
             "Prophet is not installed. Run: pip install prophet"
         )
 
+    data_span_days = (df["ds"].max() - df["ds"].min()).days
+    use_yearly = data_span_days >= 365
+    if not use_yearly:
+        print(f"  NOTE: Data spans only {data_span_days} days — yearly seasonality disabled "
+              "(requires >= 365 days of history).")
+
     model = Prophet(
-        yearly_seasonality=True,
+        yearly_seasonality=use_yearly,
         weekly_seasonality=True,
         daily_seasonality=False,
-        interval_width=0.95,         # 95% confidence interval
+        interval_width=0.95,         # 95% confidence interval — matches Z=1.645 service level
         changepoint_prior_scale=0.1, # moderate flexibility for trend changes
     )
     model.fit(df)
@@ -176,16 +170,13 @@ def plot_forecast(df_actual: pd.DataFrame, forecast: pd.DataFrame,
     return out_path
 
 
-def plot_seasonality(model, category: str) -> str:
+def plot_seasonality(model, forecast: pd.DataFrame, category: str) -> str:
     """
     Chart 06 — Prophet seasonality components (weekly + yearly).
     Uses Prophet's built-in plot_components but applies a custom title.
+    Reuses the already-computed forecast — no redundant second prediction.
     """
-    # Build a representative future frame just for component plotting
-    future_sample = model.make_future_dataframe(periods=FORECAST_DAYS, freq="D")
-    forecast_sample = model.predict(future_sample)
-
-    fig = model.plot_components(forecast_sample)
+    fig = model.plot_components(forecast)
     fig.set_size_inches(12, 8)
     fig.suptitle(
         f"Demand Seasonality Components — {category}\n"
@@ -305,7 +296,7 @@ def main():
     # ── Chart 06: Seasonality components ─────────────────────────────────
     print("[2/2] Generating Seasonality Analysis chart...")
     try:
-        path = plot_seasonality(model, category)
+        path = plot_seasonality(model, forecast, category)
         print(f"  Saved → {path}\n")
     except Exception as exc:
         print(f"  ERROR generating seasonality chart — {exc}", file=sys.stderr)

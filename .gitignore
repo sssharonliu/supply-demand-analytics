@@ -4,6 +4,16 @@ data/processed/
 *.csv
 *.xlsx
 
+# Generated chart outputs (binary files — regenerate with run_all.py)
+dashboards/*.png
+dashboards/*.csv
+
+# Environment / credentials (never commit these)
+.env
+
+# Generated logs
+logs/
+
 # Ignore system and cache files
 .DS_Store
 __pycache__/

@@ -3,29 +3,18 @@ import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import prophet
 import seaborn as sns
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 # Ensure working directory is the script's folder
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-# --- Configuration ---
-DB_USER = "root"
-DB_PASSWORD = "password123"
-DB_HOST = "localhost"
-DB_NAME = "supply_chain_db"
-OUTPUT_DIR = "dashboards"
+from config import get_engine, OUTPUT_DIR
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Apply a clean seaborn theme globally
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
-
-
-def get_engine():
-    url = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
-    return create_engine(url)
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +167,15 @@ def chart_inventory_health(engine):
     )
 
     # Label each point with its category name
-    for _, row in df.iterrows():
-        ax.annotate(
+    df.apply(
+        lambda row: ax.annotate(
             row["category_name"],
             xy=(row["total_sales"], row["avg_profit"]),
             xytext=(5, 4), textcoords="offset points",
             fontsize=7.5, color="dimgrey"
-        )
+        ),
+        axis=1,
+    )
 
     cbar = fig.colorbar(scatter, ax=ax, pad=0.02)
     cbar.set_label("Avg Profit per Order ($)", rotation=270, labelpad=15)

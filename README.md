@@ -176,7 +176,14 @@ CREATE DATABASE supply_chain_db;
 pip install -r requirements.txt
 ```
 
-### 2. Add the source data
+### 2. Configure credentials
+
+```bash
+cp .env.example .env
+# Edit .env with your MySQL credentials
+```
+
+### 3. Add the source data
 
 Download the **DataCo Smart Supply Chain** dataset and place it at:
 
@@ -184,27 +191,26 @@ Download the **DataCo Smart Supply Chain** dataset and place it at:
 data/raw/DataCoSupplyChainDataset.csv
 ```
 
-### 3. Run the ETL pipeline
+### 4. Run the full pipeline (recommended)
 
 ```bash
-python ingest_data.py
+python run_all.py
 ```
 
-Cleans and loads all 180,519 rows into `supply_chain_db.orders`. Expect 1–2 minutes.
-
-### 4. Generate the BI dashboards (Charts 01–03)
+This runs all four stages in order with a final pass/fail summary. If the database is already populated, use `--skip-ingest` to skip the ETL step:
 
 ```bash
-python visualize_insights.py
+python run_all.py --skip-ingest
 ```
 
-### 5. Run the Inventory Policy Engine (Chart 04)
+### Run individual stages
 
 ```bash
-python inventory_optimization.py
+python ingest_data.py           # ETL: CSV → MySQL (1–2 min)
+python visualize_insights.py    # Charts 01–03
+python inventory_optimization.py  # Chart 04 + inventory_policy.csv
+python demand_forecasting.py    # Charts 05–06 (Prophet forecast)
 ```
-
-Calculates Safety Stock and ROP per category, saves `dashboards/04_inventory_recommendations.png`, and prints a formatted policy table to the terminal.
 
 ---
 
@@ -213,20 +219,29 @@ Calculates Safety Stock and ROP per category, saves `dashboards/04_inventory_rec
 ```
 Supply-Demand-Analytics/
 ├── data/
-│   └── raw/                         # Source CSV (not tracked in git)
-├── dashboards/
+│   └── raw/                              # Source CSV (not tracked in git)
+├── dashboards/                           # Generated outputs (not tracked in git)
 │   ├── 01_demand_volatility.png          # CV-based replenishment segmentation
 │   ├── 02_supply_reliability.png         # Late delivery rate by shipping mode
 │   ├── 03_inventory_health.png           # Sales vs. margin working capital matrix
-│   └── 04_inventory_recommendations.png # ROP stacked bar — cycle + safety stock
+│   ├── 04_inventory_recommendations.png  # ROP stacked bar — cycle + safety stock
+│   ├── 05_demand_forecast.png            # 90-day Prophet forecast with CI
+│   ├── 06_seasonality_analysis.png       # Weekly & yearly seasonality components
+│   └── inventory_policy.csv             # Full ROP & safety stock table (all categories)
 ├── sql/
-│   ├── 01_demand_volatility.sql
+│   ├── 01_demand_volatility.sql          # Reference queries
 │   └── 02_supply_reliability.sql
+├── logs/                                 # Ingestion logs (not tracked in git)
 ├── notebooks/                            # Exploratory analysis
+├── config.py                             # Shared DB credentials & engine factory
 ├── ingest_data.py                        # ETL pipeline
 ├── visualize_insights.py                 # BI dashboard engine (Charts 01–03)
-├── inventory_optimization.py             # Inventory policy engine (Chart 04)
-└── requirements.txt
+├── inventory_optimization.py             # Inventory policy engine (Chart 04 + CSV)
+├── demand_forecasting.py                 # Prophet demand forecast (Charts 05–06)
+├── run_all.py                            # Full pipeline orchestrator
+├── requirements.txt                      # Pinned dependencies
+├── .env                                  # Credentials (not tracked in git)
+└── .env.example                          # Credentials template
 ```
 
 ---

@@ -1,7 +1,8 @@
-pandas
-numpy
-sqlalchemy
-pymysql
-prophet
-matplotlib
-seaborn
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0,<2.0.0
+sqlalchemy>=2.0.0,<3.0.0
+pymysql>=1.1.0,<2.0.0
+prophet>=1.1.0,<2.0.0
+matplotlib>=3.7.0,<4.0.0
+seaborn>=0.12.0,<1.0.0
+python-dotenv>=1.0.0,<2.0.0

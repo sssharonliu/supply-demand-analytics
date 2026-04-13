@@ -22,32 +22,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 # ── Working directory ─────────────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-DB_USER     = "root"
-DB_PASSWORD = "password123"
-DB_HOST     = "localhost"
-DB_NAME     = "supply_chain_db"
-OUTPUT_DIR  = "dashboards"
+from config import get_engine, OUTPUT_DIR, DB_NAME
 
+# ── Configuration ─────────────────────────────────────────────────────────────
 Z_SCORE     = 1.645   # 95% one-tailed service level
-TOP_N       = 10      # categories shown in chart
+TOP_N       = 10      # categories shown in chart and console table
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Database
-# ─────────────────────────────────────────────────────────────────────────────
-
-def get_engine():
-    url = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
-    return create_engine(url)
 
 
 def fetch_raw_data(engine) -> pd.DataFrame:
@@ -195,8 +182,18 @@ def plot_rop_chart(policy: pd.DataFrame) -> str:
 # 4. Console report
 # ─────────────────────────────────────────────────────────────────────────────
 
+def export_policy_csv(policy: pd.DataFrame) -> str:
+    """Save the full policy table to CSV for procurement teams."""
+    out_path = os.path.join(OUTPUT_DIR, "inventory_policy.csv")
+    policy[[
+        "category_name", "avg_daily_demand", "std_daily_demand",
+        "avg_lead_time", "safety_stock", "cycle_stock", "rop"
+    ]].to_csv(out_path, index=False, float_format="%.2f")
+    return out_path
+
+
 def print_policy_table(policy: pd.DataFrame):
-    top = policy.head(15)
+    top = policy.head(TOP_N)
 
     col_w = [28, 14, 12, 14, 12]
     headers = ["Category", "Avg Daily Demand", "Lead Time", "Safety Stock", "ROP"]
@@ -277,6 +274,14 @@ def main():
         print(f"  Saved → {path}\n")
     except Exception as exc:
         print(f"  ERROR generating chart — {exc}", file=sys.stderr)
+
+    # ── CSV export ────────────────────────────────────────────────────────
+    print("Exporting policy table to CSV...")
+    try:
+        csv_path = export_policy_csv(policy)
+        print(f"  Saved → {csv_path}\n")
+    except Exception as exc:
+        print(f"  ERROR exporting CSV — {exc}", file=sys.stderr)
 
     # ── Console table ─────────────────────────────────────────────────────
     print_policy_table(policy)
