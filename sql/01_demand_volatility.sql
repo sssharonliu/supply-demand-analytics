@@ -3,7 +3,6 @@ USE supply_chain_db;
 WITH MonthlyDemand AS (
     SELECT 
         category_name,
-        -- Using the correct column name found from your search
         DATE_FORMAT(STR_TO_DATE(order_date_dateorders, '%m/%d/%Y %H:%i'), '%Y-%m') AS month,
         SUM(order_item_quantity) AS monthly_units
     FROM orders
