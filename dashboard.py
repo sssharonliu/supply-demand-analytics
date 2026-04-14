@@ -1,0 +1,484 @@
+"""
+dashboard.py
+────────────
+Phase 3 — Interactive Supply Chain Intelligence Dashboard
+
+Tabs:
+  1. Scenario Modeler    — live ROP / Safety Stock recalculation with sliders
+  2. Demand Forecast     — interactive Plotly forecast by category
+  3. Policy Table        — sortable inventory policy with CSV download
+
+Run:
+    streamlit run dashboard.py
+"""
+
+import os
+import math
+import warnings
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from sqlalchemy import text
+
+warnings.filterwarnings("ignore")
+
+# ── Working directory & config ────────────────────────────────────────────────
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+from config import get_engine, OUTPUT_DIR
+
+POLICY_CSV   = os.path.join(OUTPUT_DIR, "inventory_policy.csv")
+FORECAST_DAYS = 90
+
+# Z-score lookup for service level selector
+Z_MAP = {"90%": 1.282, "95%": 1.645, "99%": 2.326}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page configuration
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Supply Chain Intelligence",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.title("📦 Supply Chain Intelligence System")
+st.caption(
+    "End-to-End Inventory Optimization & Risk Mitigation · "
+    "180,519 order records · DataCo Smart Supply Chain Dataset"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cached data loaders
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def load_policy() -> pd.DataFrame:
+    if not os.path.exists(POLICY_CSV):
+        return pd.DataFrame()
+    return pd.read_csv(POLICY_CSV)
+
+
+@st.cache_data(ttl=3600)
+def load_top_categories(n: int = 5) -> list[str]:
+    engine = get_engine()
+    sql = text("""
+        SELECT category_name, SUM(order_item_quantity) AS total_qty
+        FROM orders
+        WHERE category_name IS NOT NULL AND order_item_quantity IS NOT NULL
+        GROUP BY category_name
+        ORDER BY total_qty DESC
+        LIMIT :n
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params={"n": n})
+    return df["category_name"].tolist()
+
+
+@st.cache_data(ttl=3600)
+def load_daily_demand(category: str) -> pd.DataFrame:
+    engine = get_engine()
+    sql = text("""
+        SELECT
+            DATE(STR_TO_DATE(order_date_dateorders, '%m/%d/%Y %H:%i')) AS ds,
+            SUM(order_item_quantity) AS y
+        FROM orders
+        WHERE category_name = :cat
+          AND order_status NOT IN ('CANCELED', 'SUSPECTED_FRAUD')
+          AND order_date_dateorders IS NOT NULL
+        GROUP BY ds
+        ORDER BY ds
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(sql, conn, params={"cat": category})
+    df["ds"] = pd.to_datetime(df["ds"])
+    df = df.dropna().query("y > 0")
+    return df
+
+
+@st.cache_data(ttl=3600)
+def run_forecast(category: str) -> tuple:
+    """Fit Prophet and return (model, forecast df)."""
+    from prophet import Prophet
+    df = load_daily_demand(category)
+    span = (df["ds"].max() - df["ds"].min()).days
+    model = Prophet(
+        yearly_seasonality=span >= 365,
+        weekly_seasonality=True,
+        daily_seasonality=False,
+        interval_width=0.95,
+        changepoint_prior_scale=0.1,
+    )
+    model.fit(df)
+    future = model.make_future_dataframe(periods=FORECAST_DAYS, freq="D")
+    forecast = model.predict(future)
+    return df, forecast
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tabs
+# ─────────────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs([
+    "🎛️ Scenario Modeler",
+    "📈 Demand Forecast",
+    "📋 Policy Table",
+])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Scenario Modeler
+# ═════════════════════════════════════════════════════════════════════════════
+with tab1:
+    st.subheader("Inventory Policy Scenario Modeler")
+    st.caption(
+        "Adjust the service level and lead time to see how Safety Stock and ROP "
+        "change across all categories. Uses the cached policy baseline from the pipeline."
+    )
+
+    policy_df = load_policy()
+
+    if policy_df.empty:
+        st.error(
+            "`dashboards/inventory_policy.csv` not found. "
+            "Run `python inventory_optimization.py` to generate it."
+        )
+    else:
+        # ── Sidebar controls ──────────────────────────────────────────────
+        with st.sidebar:
+            st.header("⚙️ Scenario Controls")
+            st.caption("Adjust parameters to model different inventory policies.")
+
+            service_level = st.selectbox(
+                "Service Level",
+                options=list(Z_MAP.keys()),
+                index=1,
+                help="Higher service level = more safety stock = fewer stockouts but higher holding cost."
+            )
+            z = Z_MAP[service_level]
+
+            lt_multiplier = st.slider(
+                "Lead Time Multiplier",
+                min_value=0.5, max_value=2.0, value=1.0, step=0.05,
+                format="%.2f×",
+                help="1.0× = current observed lead times. "
+                     "2.0× simulates a supplier crisis doubling transit times."
+            )
+
+            all_cats = policy_df["category_name"].tolist()
+            selected_cats = st.multiselect(
+                "Filter Categories",
+                options=all_cats,
+                default=all_cats[:10],
+                help="Select categories to display. Defaults to Top 10 by baseline ROP."
+            )
+
+        # ── Recalculate scenario ──────────────────────────────────────────
+        BASE_Z  = 1.645
+        BASE_LT = 1.0
+
+        df = policy_df[policy_df["category_name"].isin(selected_cats)].copy()
+
+        df["adj_lead_time"]   = df["avg_lead_time"] * lt_multiplier
+        df["safety_stock_new"] = (z * df["std_daily_demand"] * df["adj_lead_time"].apply(math.sqrt)).round(1)
+        df["cycle_stock_new"]  = (df["avg_daily_demand"] * df["adj_lead_time"]).round(1)
+        df["rop_new"]          = (df["cycle_stock_new"] + df["safety_stock_new"]).round(1)
+
+        # Baseline (95%, 1.0×) for delta
+        df["safety_stock_base"] = (BASE_Z * df["std_daily_demand"] * df["avg_lead_time"].apply(math.sqrt)).round(1)
+        df["cycle_stock_base"]  = (df["avg_daily_demand"] * df["avg_lead_time"]).round(1)
+        df["rop_base"]          = (df["cycle_stock_base"] + df["safety_stock_base"]).round(1)
+        df["rop_delta"]         = df["rop_new"] - df["rop_base"]
+
+        df_plot = df.sort_values("rop_new", ascending=True)
+
+        # ── KPI cards ─────────────────────────────────────────────────────
+        total_rop_new  = df["rop_new"].sum()
+        total_rop_base = df["rop_base"].sum()
+        delta_pct = (total_rop_new - total_rop_base) / total_rop_base * 100
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Service Level", service_level, f"Z = {z}")
+        k2.metric("Lead Time Multiplier", f"{lt_multiplier:.2f}×",
+                  f"{'↑' if lt_multiplier > 1 else '↓'} vs baseline" if lt_multiplier != 1.0 else "Baseline")
+        k3.metric("Total Portfolio ROP",
+                  f"{total_rop_new:,.0f} units",
+                  f"{delta_pct:+.1f}% vs 95% / 1.0× baseline")
+
+        st.divider()
+
+        # ── Stacked bar chart ──────────────────────────────────────────────
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            y=df_plot["category_name"],
+            x=df_plot["cycle_stock_new"],
+            name="Cycle Stock  (μ × Lead Time)",
+            orientation="h",
+            marker_color="#3a7ebf",
+            hovertemplate="<b>%{y}</b><br>Cycle Stock: %{x:,.1f} units<extra></extra>",
+        ))
+
+        fig.add_trace(go.Bar(
+            y=df_plot["category_name"],
+            x=df_plot["safety_stock_new"],
+            name=f"Safety Stock  (Z={z} × σ × √LT)",
+            orientation="h",
+            marker_color="#e07b6a",
+            hovertemplate="<b>%{y}</b><br>Safety Stock: %{x:,.1f} units<br>"
+                          "ROP Delta: %{customdata:+,.1f} vs baseline<extra></extra>",
+            customdata=df_plot["rop_delta"],
+        ))
+
+        fig.update_layout(
+            barmode="stack",
+            title=dict(
+                text=f"Reorder Point by Category — {service_level} Service Level · {lt_multiplier:.2f}× Lead Time",
+                font=dict(size=14, color="#1f2937"),
+            ),
+            font=dict(color="#1f2937"),
+            xaxis_title="Units",
+            yaxis_title=None,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                        font=dict(color="#1f2937")),
+            height=max(400, len(df_plot) * 32),
+            margin=dict(l=0, r=40, t=60, b=40),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+        )
+        fig.update_xaxes(showgrid=True, gridcolor="#eeeeee",
+                         tickfont=dict(color="#1f2937"), title_font=dict(color="#1f2937"))
+        fig.update_yaxes(tickfont=dict(color="#1f2937"))
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ── Delta table ────────────────────────────────────────────────────
+        with st.expander("View ROP changes vs. baseline (95% / 1.0×)"):
+            delta_view = df[["category_name", "rop_base", "rop_new", "rop_delta"]].copy()
+            delta_view.columns = ["Category", "Baseline ROP", "Scenario ROP", "Δ ROP"]
+            delta_view = delta_view.sort_values("Δ ROP", ascending=False).reset_index(drop=True)
+            st.dataframe(
+                delta_view.style.format({
+                    "Baseline ROP": "{:.0f}",
+                    "Scenario ROP": "{:.0f}",
+                    "Δ ROP":        "{:+.0f}",
+                }).background_gradient(subset=["Δ ROP"], cmap="RdYlGn_r"),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Demand Forecast
+# ═════════════════════════════════════════════════════════════════════════════
+with tab2:
+    st.subheader("90-Day Demand Forecast")
+    st.caption(
+        "Prophet time-series model fit on daily order quantities. "
+        "The red dashed line is the worst-case upper bound — the planning figure for procurement."
+    )
+
+    try:
+        top_cats = load_top_categories(5)
+    except Exception as e:
+        st.error(f"Could not connect to database: {e}")
+        top_cats = []
+
+    if top_cats:
+        selected_cat = st.selectbox("Select Category", options=top_cats, index=0)
+
+        with st.spinner(f"Fitting Prophet model for **{selected_cat}**…"):
+            try:
+                df_actual, forecast = run_forecast(selected_cat)
+            except Exception as e:
+                st.error(f"Forecast failed: {e}")
+                df_actual, forecast = pd.DataFrame(), pd.DataFrame()
+
+        if not forecast.empty:
+            cutoff    = df_actual["ds"].max()
+            future_fc = forecast[forecast["ds"] > cutoff].copy()
+
+            # ── Plotly chart ───────────────────────────────────────────────
+            fig2 = go.Figure()
+
+            # CI band
+            fig2.add_trace(go.Scatter(
+                x=pd.concat([forecast["ds"], forecast["ds"][::-1]]),
+                y=pd.concat([forecast["yhat_upper"], forecast["yhat_lower"][::-1]]),
+                fill="toself",
+                fillcolor="rgba(44,123,182,0.12)",
+                line=dict(color="rgba(0,0,0,0)"),
+                name="95% Confidence Interval",
+                hoverinfo="skip",
+            ))
+
+            # Forecast mean
+            fig2.add_trace(go.Scatter(
+                x=forecast["ds"], y=forecast["yhat"],
+                mode="lines",
+                line=dict(color="#1a1a2e", width=1.5),
+                name="Forecast (mean)",
+                hovertemplate="%{x|%Y-%m-%d}<br>Mean: %{y:.1f} units<extra></extra>",
+            ))
+
+            # Historical actuals
+            fig2.add_trace(go.Scatter(
+                x=df_actual["ds"], y=df_actual["y"],
+                mode="markers",
+                marker=dict(color="#2c7bb6", size=3, opacity=0.6),
+                name="Historical Demand",
+                hovertemplate="%{x|%Y-%m-%d}<br>Actual: %{y:.0f} units<extra></extra>",
+            ))
+
+            # Upper bound (forecast period only)
+            fig2.add_trace(go.Scatter(
+                x=future_fc["ds"], y=future_fc["yhat_upper"],
+                mode="lines",
+                line=dict(color="#d7191c", width=2, dash="dash"),
+                name="Worst-Case Upper Bound (procurement plan)",
+                hovertemplate="%{x|%Y-%m-%d}<br>Upper Bound: %{y:.1f} units<extra></extra>",
+            ))
+
+            # Cutoff vertical line (add_vline annotation math breaks on date strings;
+            # use add_shape + add_annotation instead)
+            cutoff_str = cutoff.isoformat()
+            fig2.add_shape(
+                type="line",
+                x0=cutoff_str, x1=cutoff_str, y0=0, y1=1, yref="paper",
+                line=dict(dash="dot", color="grey", width=1),
+            )
+            fig2.add_annotation(
+                x=cutoff_str, y=1, yref="paper",
+                text="Forecast start", showarrow=False,
+                xanchor="left", font=dict(size=11, color="grey"),
+            )
+
+            fig2.update_layout(
+                title=dict(
+                    text=f"Demand Forecast — {selected_cat}  ·  {FORECAST_DAYS}-Day Horizon",
+                    font=dict(size=14, color="#1f2937"),
+                ),
+                font=dict(color="#1f2937"),
+                xaxis_title="Date",
+                yaxis_title="Daily Order Quantity (units)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                            font=dict(color="#1f2937")),
+                height=500,
+                margin=dict(l=0, r=0, t=80, b=40),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                hovermode="x unified",
+            )
+            fig2.update_xaxes(showgrid=True, gridcolor="#eeeeee",
+                              tickfont=dict(color="#1f2937"), title_font=dict(color="#1f2937"))
+            fig2.update_yaxes(showgrid=True, gridcolor="#eeeeee",
+                              tickfont=dict(color="#1f2937"), title_font=dict(color="#1f2937"))
+
+            st.plotly_chart(fig2, use_container_width=True)
+
+            # ── Summary stats ──────────────────────────────────────────────
+            st.divider()
+            st.markdown("**Forecast Summary**")
+            m1, m2, m3, m4 = st.columns(4)
+
+            avg_30_mean  = future_fc.head(30)["yhat"].mean()
+            avg_30_upper = future_fc.head(30)["yhat_upper"].mean()
+            avg_90_mean  = future_fc["yhat"].mean()
+            avg_90_upper = future_fc["yhat_upper"].mean()
+            peak         = future_fc.loc[future_fc["yhat_upper"].idxmax()]
+
+            m1.metric("Avg Daily Demand (30d)", f"{avg_30_mean:.1f} units", "mean forecast")
+            m2.metric("Procurement Plan (30d)",  f"{avg_30_upper:.1f} units", "95% upper bound")
+            m3.metric("Avg Daily Demand (90d)", f"{avg_90_mean:.1f} units", "mean forecast")
+            m4.metric("Peak Risk Date",
+                      peak["ds"].strftime("%b %d, %Y"),
+                      f"{peak['yhat_upper']:.0f} units worst-case")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Policy Table
+# ═════════════════════════════════════════════════════════════════════════════
+with tab3:
+    st.subheader("Inventory Policy Table")
+    st.caption(
+        "Full per-category Safety Stock and Reorder Point recommendations at 95% service level. "
+        "Rows highlighted in amber have Safety Stock > Cycle Stock — highest demand volatility risk."
+    )
+
+    policy_df = load_policy()
+
+    if policy_df.empty:
+        st.error(
+            "`dashboards/inventory_policy.csv` not found. "
+            "Run `python inventory_optimization.py` to generate it."
+        )
+    else:
+        # ── Search & sort controls ────────────────────────────────────────
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            search = st.text_input("Search category", placeholder="e.g. Cleats")
+        with c2:
+            sort_col = st.selectbox(
+                "Sort by",
+                ["rop", "safety_stock", "avg_daily_demand", "avg_lead_time", "category_name"],
+                index=0,
+            )
+
+        display_df = policy_df.copy()
+        if search:
+            display_df = display_df[
+                display_df["category_name"].str.contains(search, case=False, na=False)
+            ]
+        display_df = display_df.sort_values(sort_col, ascending=(sort_col == "category_name"))
+
+        # ── Rename for display ────────────────────────────────────────────
+        display_df = display_df.rename(columns={
+            "category_name":    "Category",
+            "avg_daily_demand": "Avg Daily Demand",
+            "std_daily_demand": "σ Daily Demand",
+            "avg_lead_time":    "Avg Lead Time (days)",
+            "safety_stock":     "Safety Stock",
+            "cycle_stock":      "Cycle Stock",
+            "rop":              "ROP",
+        })
+
+        # ── Style: highlight high-risk rows (safety > cycle) ──────────────
+        def highlight_high_risk(row):
+            if row["Safety Stock"] > row["Cycle Stock"]:
+                return ["background-color: #fff3cd"] * len(row)
+            return [""] * len(row)
+
+        styled = (
+            display_df.style
+            .apply(highlight_high_risk, axis=1)
+            .format({
+                "Avg Daily Demand":      "{:.1f}",
+                "σ Daily Demand":        "{:.1f}",
+                "Avg Lead Time (days)":  "{:.1f}",
+                "Safety Stock":          "{:.1f}",
+                "Cycle Stock":           "{:.1f}",
+                "ROP":                   "{:.0f}",
+            })
+        )
+
+        st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+
+        # ── Stats row ─────────────────────────────────────────────────────
+        high_risk_n = (policy_df["safety_stock"] > policy_df["cycle_stock"]).sum()
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Total Categories", len(display_df))
+        s2.metric("High-Risk Categories",  high_risk_n,
+                  "Safety Stock > Cycle Stock", delta_color="inverse")
+        s3.metric("Highest ROP",
+                  f"{policy_df['rop'].max():,.0f} units",
+                  policy_df.loc[policy_df['rop'].idxmax(), 'category_name'])
+
+        st.divider()
+
+        # ── Download button ────────────────────────────────────────────────
+        csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️  Download filtered table as CSV",
+            data=csv_bytes,
+            file_name="inventory_policy_export.csv",
+            mime="text/csv",
+        )
