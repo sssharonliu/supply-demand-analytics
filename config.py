@@ -28,6 +28,20 @@ OUTPUT_DIR  = os.path.join(_BASE_DIR, "dashboards")
 
 
 def get_engine():
-    """Return a SQLAlchemy engine connected to the configured MySQL database."""
-    url = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
+    """Return a SQLAlchemy engine.
+
+    When running on Streamlit Cloud, credentials are read from st.secrets
+    (set via the Streamlit Cloud UI). Locally, .env values are used.
+    """
+    user, password, host, name = DB_USER, DB_PASSWORD, DB_HOST, DB_NAME
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            user     = st.secrets.get("DB_USER",     user)
+            password = st.secrets.get("DB_PASSWORD", password)
+            host     = st.secrets.get("DB_HOST",     host)
+            name     = st.secrets.get("DB_NAME",     name)
+    except Exception:
+        pass
+    url = f"mysql+pymysql://{user}:{password}@{host}/{name}"
     return create_engine(url, pool_pre_ping=True)

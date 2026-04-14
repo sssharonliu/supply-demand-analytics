@@ -6,7 +6,16 @@ data/processed/
 
 # Generated chart outputs (binary files — regenerate with run_all.py)
 dashboards/*.png
+
+# Deployment data CSVs are committed so Streamlit Cloud can load them
+# All other dashboards CSVs (interim outputs) are ignored
 dashboards/*.csv
+!dashboards/inventory_policy.csv
+!dashboards/forecast_data.csv
+!dashboards/actuals_data.csv
+
+# Streamlit secrets (credentials — never commit)
+.streamlit/secrets.toml
 
 # Environment / credentials (never commit these)
 .env
