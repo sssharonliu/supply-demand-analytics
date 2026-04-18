@@ -3,12 +3,16 @@ inventory_optimization.py
 ──────────────────────────
 Phase 2 — Inventory Policy Engine
 Calculates Safety Stock and Reorder Point (ROP) per product category
-at a 95% service level using the standard SCA formula:
+at a 95% service level using the combined-variance formula (Nahmias & Olsen):
 
-    Safety Stock = Z × σ_demand × √(Lead Time)
-    ROP          = (μ_demand × Lead Time) + Safety Stock
+    Safety Stock = Z × √(σ²_demand × μ_LT  +  μ²_demand × σ²_LT)
+    ROP          = (μ_demand × μ_LT) + Safety Stock
 
     Z = 1.645  →  95% service level
+
+The simple formula  Z × σ_demand × √(μ_LT)  assumes deterministic lead time.
+This dataset has a 79.8% late-delivery rate, so σ_LT is material and must be
+included to avoid systematically under-estimating safety stock.
 
 Output
   dashboards/04_inventory_recommendations.png  — Top 10 ROP stacked bar chart
@@ -17,7 +21,7 @@ Output
 
 import os
 import sys
-import math
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -27,11 +31,11 @@ from sqlalchemy import text
 # ── Working directory ─────────────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from config import get_engine, OUTPUT_DIR, DB_NAME
+from config import get_engine, OUTPUT_DIR, DB_NAME, CHART_TOP_N
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-Z_SCORE     = 1.645   # 95% one-tailed service level
-TOP_N       = 10      # categories shown in chart and console table
+Z_SCORE = 1.645   # 95% one-tailed service level
+TOP_N   = CHART_TOP_N
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
@@ -87,23 +91,26 @@ def compute_inventory_policy(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
-    # ── Average lead time per category ───────────────────────────────────
+    # ── Lead time stats per category (mean + std) ────────────────────────
     lt_stats = (
         df.groupby("category_name")["days_for_shipping_real"]
-        .mean()
+        .agg(avg_lead_time="mean", std_lead_time="std")
         .reset_index()
-        .rename(columns={"days_for_shipping_real": "avg_lead_time"})
     )
 
     # ── Merge ─────────────────────────────────────────────────────────────
     policy = demand_stats.merge(lt_stats, on="category_name")
     policy["std_daily_demand"] = policy["std_daily_demand"].fillna(0)
+    policy["std_lead_time"]    = policy["std_lead_time"].fillna(0)
 
-    # ── SCA formulas ──────────────────────────────────────────────────────
+    # ── Combined-variance safety stock (Nahmias & Olsen) ─────────────────
+    # Accounts for both demand variance during lead time AND lead-time variance.
+    # Reduces to the simple formula when σ_LT = 0 (deterministic lead time).
     policy["safety_stock"] = (
-        Z_SCORE
-        * policy["std_daily_demand"]
-        * policy["avg_lead_time"].apply(math.sqrt)
+        Z_SCORE * np.sqrt(
+            policy["std_daily_demand"] ** 2 * policy["avg_lead_time"]
+            + policy["avg_daily_demand"] ** 2 * policy["std_lead_time"] ** 2
+        )
     ).round(1)
 
     policy["cycle_stock"] = (
@@ -144,7 +151,7 @@ def plot_rop_chart(policy: pd.DataFrame) -> str:
         top["category_name"], top["safety_stock"],
         left=top["cycle_stock"],
         color=safety_color, edgecolor="white", linewidth=0.6,
-        label=f"Safety Stock  (Z={Z_SCORE} × σ × √Lead Time)"
+        label=f"Safety Stock  (Z={Z_SCORE} × √(σ²_d·μ_LT + μ²_d·σ²_LT))"
     )
 
     # ROP value labels at the end of each bar
@@ -165,7 +172,7 @@ def plot_rop_chart(policy: pd.DataFrame) -> str:
 
     # Legend
     cycle_patch  = mpatches.Patch(color=cycle_color,  label="Cycle Stock  (μ × Lead Time)")
-    safety_patch = mpatches.Patch(color=safety_color, label="Safety Stock  (Z × σ × √Lead Time)")
+    safety_patch = mpatches.Patch(color=safety_color, label="Safety Stock  (Z × √(σ²_d·μ_LT + μ²_d·σ²_LT))")
     ax.legend(handles=[cycle_patch, safety_patch], loc="lower right", fontsize=9, framealpha=0.9)
 
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
@@ -187,7 +194,7 @@ def export_policy_csv(policy: pd.DataFrame) -> str:
     out_path = os.path.join(OUTPUT_DIR, "inventory_policy.csv")
     policy[[
         "category_name", "avg_daily_demand", "std_daily_demand",
-        "avg_lead_time", "safety_stock", "cycle_stock", "rop"
+        "avg_lead_time", "std_lead_time", "safety_stock", "cycle_stock", "rop"
     ]].to_csv(out_path, index=False, float_format="%.2f")
     return out_path
 

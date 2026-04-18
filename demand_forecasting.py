@@ -17,66 +17,17 @@ import warnings
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from sqlalchemy import text
+from sqlalchemy import text  # used by get_engine() health check in main()
 
 warnings.filterwarnings("ignore")  # suppress Prophet/Stan verbosity
 
 # ── Working directory ─────────────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from config import get_engine, OUTPUT_DIR
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-FORECAST_DAYS = 90
+from config import get_engine, OUTPUT_DIR, FORECAST_DAYS, PROPHET_INTERVAL_WIDTH, PROPHET_CHANGEPOINT_PRIOR
+from data import fetch_daily_demand, fetch_top_categories
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-def fetch_top_category(engine) -> str:
-    """Return the single highest-volume category by total order quantity."""
-    sql = text("""
-        SELECT
-            category_name,
-            SUM(order_item_quantity) AS total_qty
-        FROM orders
-        WHERE category_name IS NOT NULL
-          AND order_item_quantity IS NOT NULL
-        GROUP BY category_name
-        ORDER BY total_qty DESC
-        LIMIT 1
-    """)
-    with engine.connect() as conn:
-        row = conn.execute(sql).fetchone()
-    if row is None:
-        raise RuntimeError("No category data found in the database.")
-    return row[0]
-
-
-def fetch_daily_demand(engine, category: str) -> pd.DataFrame:
-    """
-    Pull daily aggregated order_item_quantity for the given category.
-    Date is parsed from the order_date_dateorders column (format: %m/%d/%Y %H:%i).
-    Returns a DataFrame with columns [ds, y].
-    """
-    sql = text("""
-        SELECT
-            DATE(STR_TO_DATE(order_date_dateorders, '%m/%d/%Y %H:%i')) AS order_date,
-            SUM(order_item_quantity)                                    AS daily_qty
-        FROM orders
-        WHERE category_name   = :cat
-          AND order_status NOT IN ('CANCELED', 'SUSPECTED_FRAUD')
-          AND order_date_dateorders IS NOT NULL
-        GROUP BY order_date
-        ORDER BY order_date
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"cat": category})
-
-    df.columns = ["ds", "y"]
-    df["ds"] = pd.to_datetime(df["ds"])
-    df = df.dropna(subset=["ds", "y"])
-    df = df[df["y"] > 0]
-    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,8 +56,8 @@ def build_and_run_model(df: pd.DataFrame) -> tuple:
         yearly_seasonality=use_yearly,
         weekly_seasonality=True,
         daily_seasonality=False,
-        interval_width=0.95,         # 95% confidence interval — matches Z=1.645 service level
-        changepoint_prior_scale=0.1, # moderate flexibility for trend changes
+        interval_width=PROPHET_INTERVAL_WIDTH,
+        changepoint_prior_scale=PROPHET_CHANGEPOINT_PRIOR,
     )
     model.fit(df)
 
@@ -256,7 +207,7 @@ def main():
     # ── Identify target category ─────────────────────────────────────────
     print("Identifying highest-volume product category...")
     try:
-        category = fetch_top_category(engine)
+        category = fetch_top_categories(engine, 1)[0]
         print(f"  Target category: {category}\n")
     except Exception as exc:
         print(f"  ERROR: {exc}", file=sys.stderr)

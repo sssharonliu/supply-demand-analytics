@@ -207,6 +207,30 @@ def ingest(engine, df: pd.DataFrame):
 # 5. Validate result
 # ─────────────────────────────────────────────────────────────────────────────
 
+def ensure_indexes(engine):
+    """
+    Create analytics indexes after ingestion if they don't already exist.
+    TRUNCATE (used on re-run) preserves indexes, so this is idempotent.
+    """
+    indexes = [
+        # Speeds up GROUP BY category + date in demand queries (all analytics scripts)
+        ("idx_cat_date",  f"CREATE INDEX idx_cat_date ON {TABLE_NAME}(category_name, order_date_dateorders)"),
+        # Speeds up shipping-mode reliability analysis in visualize_insights.py
+        ("idx_shipping",  f"CREATE INDEX idx_shipping ON {TABLE_NAME}(shipping_mode, order_status)"),
+    ]
+    with engine.begin() as conn:
+        for idx_name, ddl in indexes:
+            exists = conn.execute(text(
+                "SELECT COUNT(*) FROM information_schema.statistics "
+                "WHERE table_schema = :db AND table_name = :tbl AND index_name = :idx"
+            ), {"db": DB_NAME, "tbl": TABLE_NAME, "idx": idx_name}).scalar()
+            if not exists:
+                conn.execute(text(ddl))
+                log.info("  Created index %s.", idx_name)
+            else:
+                log.info("  Index %s already exists — skipped.", idx_name)
+
+
 def validate_ingestion(engine, expected_rows: int):
     """Confirm DB row count matches CSV and spot-check critical column nulls."""
     with engine.connect() as conn:
@@ -311,7 +335,14 @@ def run_ingestion():
         log.error("Ingestion failed: %s", exc)
         sys.exit(1)
 
-    # 7. Validate result
+    # 7. Indexes
+    log.info("Ensuring analytics indexes...")
+    try:
+        ensure_indexes(engine)
+    except Exception as exc:
+        log.warning("Index creation failed (non-fatal): %s", exc)
+
+    # 8. Validate result
     log.info("Validating ingestion...")
     try:
         validate_ingestion(engine, expected_rows=len(df))
@@ -319,7 +350,7 @@ def run_ingestion():
         log.error("%s", exc)
         sys.exit(1)
 
-    # 8. Summary
+    # 9. Summary
     print_summary(df)
     log.info("Ingestion complete. Log saved to logs/ingest.log")
 

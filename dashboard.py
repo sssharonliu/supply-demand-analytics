@@ -13,8 +13,8 @@ Run:
 """
 
 import os
-import math
 import warnings
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -24,12 +24,13 @@ warnings.filterwarnings("ignore")
 
 # ── Working directory & config ────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-from config import get_engine, OUTPUT_DIR
+from config import (get_engine, OUTPUT_DIR, FORECAST_DAYS,
+                    PROPHET_INTERVAL_WIDTH, PROPHET_CHANGEPOINT_PRIOR)
+from data import fetch_daily_demand, fetch_top_categories
 
-POLICY_CSV    = os.path.join(OUTPUT_DIR, "inventory_policy.csv")
-FORECAST_CSV  = os.path.join(OUTPUT_DIR, "forecast_data.csv")
-ACTUALS_CSV   = os.path.join(OUTPUT_DIR, "actuals_data.csv")
-FORECAST_DAYS = 90
+POLICY_CSV   = os.path.join(OUTPUT_DIR, "inventory_policy.csv")
+FORECAST_CSV = os.path.join(OUTPUT_DIR, "forecast_data.csv")
+ACTUALS_CSV  = os.path.join(OUTPUT_DIR, "actuals_data.csv")
 
 # True when pre-computed CSVs are present (Streamlit Cloud path)
 _CSV_MODE = os.path.exists(FORECAST_CSV) and os.path.exists(ACTUALS_CSV)
@@ -74,18 +75,7 @@ def load_top_categories(n: int = 5) -> list[str]:
     if _CSV_MODE:
         df = pd.read_csv(FORECAST_CSV, usecols=["category"])
         return df["category"].unique()[:n].tolist()
-    engine = get_engine()
-    sql = text("""
-        SELECT category_name, SUM(order_item_quantity) AS total_qty
-        FROM orders
-        WHERE category_name IS NOT NULL AND order_item_quantity IS NOT NULL
-        GROUP BY category_name
-        ORDER BY total_qty DESC
-        LIMIT :n
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"n": n})
-    return df["category_name"].tolist()
+    return fetch_top_categories(get_engine(), n)
 
 
 @st.cache_data(ttl=3600)
@@ -108,37 +98,20 @@ def run_forecast(category: str) -> tuple:
 
     # ── DB + Prophet fallback (local only) ───────────────────────────────────
     from prophet import Prophet
-    from sqlalchemy import text as sqlt
 
     engine = get_engine()
-    sql = sqlt("""
-        SELECT
-            DATE(STR_TO_DATE(order_date_dateorders, '%m/%d/%Y %H:%i')) AS ds,
-            SUM(order_item_quantity) AS y
-        FROM orders
-        WHERE category_name = :cat
-          AND order_status NOT IN ('CANCELED', 'SUSPECTED_FRAUD')
-          AND order_date_dateorders IS NOT NULL
-        GROUP BY ds
-        ORDER BY ds
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"cat": category})
-    df["ds"] = pd.to_datetime(df["ds"])
-    df = df.dropna().query("y > 0").reset_index(drop=True)
-
+    df = fetch_daily_demand(engine, category)
     span = (df["ds"].max() - df["ds"].min()).days
     model = Prophet(
         yearly_seasonality=span >= 365,
         weekly_seasonality=True,
         daily_seasonality=False,
-        interval_width=0.95,
-        changepoint_prior_scale=0.1,
+        interval_width=PROPHET_INTERVAL_WIDTH,
+        changepoint_prior_scale=PROPHET_CHANGEPOINT_PRIOR,
     )
     model.fit(df)
     future = model.make_future_dataframe(periods=FORECAST_DAYS, freq="D")
-    forecast = model.predict(future)
-    return df, forecast
+    return df, model.predict(future)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,21 +172,30 @@ with tab1:
             )
 
         # ── Recalculate scenario ──────────────────────────────────────────
-        BASE_Z  = 1.645
-        BASE_LT = 1.0
+        BASE_Z = 1.645
 
         df = policy_df[policy_df["category_name"].isin(selected_cats)].copy()
 
-        df["adj_lead_time"]   = df["avg_lead_time"] * lt_multiplier
-        df["safety_stock_new"] = (z * df["std_daily_demand"] * df["adj_lead_time"].apply(math.sqrt)).round(1)
-        df["cycle_stock_new"]  = (df["avg_daily_demand"] * df["adj_lead_time"]).round(1)
-        df["rop_new"]          = (df["cycle_stock_new"] + df["safety_stock_new"]).round(1)
+        # Scale both μ_LT and σ_LT proportionally — simulates a supplier disruption
+        # that shifts the entire lead-time distribution, not just its mean.
+        df["adj_avg_lt"] = df["avg_lead_time"] * lt_multiplier
+        df["adj_std_lt"] = df["std_lead_time"] * lt_multiplier
+
+        df["safety_stock_new"] = (z * np.sqrt(
+            df["std_daily_demand"] ** 2 * df["adj_avg_lt"]
+            + df["avg_daily_demand"] ** 2 * df["adj_std_lt"] ** 2
+        )).round(1)
+        df["cycle_stock_new"] = (df["avg_daily_demand"] * df["adj_avg_lt"]).round(1)
+        df["rop_new"]         = (df["cycle_stock_new"] + df["safety_stock_new"]).round(1)
 
         # Baseline (95%, 1.0×) for delta
-        df["safety_stock_base"] = (BASE_Z * df["std_daily_demand"] * df["avg_lead_time"].apply(math.sqrt)).round(1)
-        df["cycle_stock_base"]  = (df["avg_daily_demand"] * df["avg_lead_time"]).round(1)
-        df["rop_base"]          = (df["cycle_stock_base"] + df["safety_stock_base"]).round(1)
-        df["rop_delta"]         = df["rop_new"] - df["rop_base"]
+        df["safety_stock_base"] = (BASE_Z * np.sqrt(
+            df["std_daily_demand"] ** 2 * df["avg_lead_time"]
+            + df["avg_daily_demand"] ** 2 * df["std_lead_time"] ** 2
+        )).round(1)
+        df["cycle_stock_base"] = (df["avg_daily_demand"] * df["avg_lead_time"]).round(1)
+        df["rop_base"]         = (df["cycle_stock_base"] + df["safety_stock_base"]).round(1)
+        df["rop_delta"]        = df["rop_new"] - df["rop_base"]
 
         df_plot = df.sort_values("rop_new", ascending=True)
 
@@ -247,7 +229,7 @@ with tab1:
         fig.add_trace(go.Bar(
             y=df_plot["category_name"],
             x=df_plot["safety_stock_new"],
-            name=f"Safety Stock  (Z={z} × σ × √LT)",
+            name=f"Safety Stock  (Z={z} × √(σ²_d·μ_LT + μ²_d·σ²_LT))",
             orientation="h",
             marker_color="#e07b6a",
             hovertemplate="<b>%{y}</b><br>Safety Stock: %{x:,.1f} units<br>"

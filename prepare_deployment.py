@@ -19,66 +19,29 @@ Output files (committed to git):
 import os
 import warnings
 import pandas as pd
-from sqlalchemy import text
 
 warnings.filterwarnings("ignore")
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-from config import get_engine, OUTPUT_DIR
-
-TOP_N         = 5
-FORECAST_DAYS = 90
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_top_categories(n: int) -> list[str]:
-    engine = get_engine()
-    sql = text("""
-        SELECT category_name, SUM(order_item_quantity) AS total_qty
-        FROM orders
-        WHERE category_name IS NOT NULL AND order_item_quantity IS NOT NULL
-        GROUP BY category_name
-        ORDER BY total_qty DESC
-        LIMIT :n
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"n": n})
-    return df["category_name"].tolist()
+from config import (get_engine, OUTPUT_DIR, DEPLOY_TOP_N, FORECAST_DAYS,
+                    PROPHET_INTERVAL_WIDTH, PROPHET_CHANGEPOINT_PRIOR)
+from data import fetch_daily_demand, fetch_top_categories
 
 
-def load_daily_demand(category: str) -> pd.DataFrame:
-    engine = get_engine()
-    sql = text("""
-        SELECT
-            DATE(STR_TO_DATE(order_date_dateorders, '%m/%d/%Y %H:%i')) AS ds,
-            SUM(order_item_quantity) AS y
-        FROM orders
-        WHERE category_name = :cat
-          AND order_status NOT IN ('CANCELED', 'SUSPECTED_FRAUD')
-          AND order_date_dateorders IS NOT NULL
-        GROUP BY ds
-        ORDER BY ds
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"cat": category})
-    df["ds"] = pd.to_datetime(df["ds"])
-    return df.dropna().query("y > 0").reset_index(drop=True)
-
-
-def run_prophet(df: pd.DataFrame) -> pd.DataFrame:
+def run_prophet(engine, category: str) -> pd.DataFrame:
     from prophet import Prophet
+    df = fetch_daily_demand(engine, category)
     span = (df["ds"].max() - df["ds"].min()).days
     model = Prophet(
         yearly_seasonality=span >= 365,
         weekly_seasonality=True,
         daily_seasonality=False,
-        interval_width=0.95,
-        changepoint_prior_scale=0.1,
+        interval_width=PROPHET_INTERVAL_WIDTH,
+        changepoint_prior_scale=PROPHET_CHANGEPOINT_PRIOR,
     )
     model.fit(df)
     future = model.make_future_dataframe(periods=FORECAST_DAYS, freq="D")
-    return model.predict(future)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
+    return df, model.predict(future)[["ds", "yhat", "yhat_lower", "yhat_upper"]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,19 +55,18 @@ def main():
         print("inventory_policy.csv not found — run `python inventory_optimization.py` first.")
         return
 
+    engine = get_engine()
+
     # ── Build forecast & actuals CSVs ────────────────────────────────────────
-    categories = load_top_categories(TOP_N)
-    print(f"Generating forecast data for top {TOP_N} categories:")
+    categories = fetch_top_categories(engine, DEPLOY_TOP_N)
+    print(f"Generating forecast data for top {DEPLOY_TOP_N} categories:")
 
     all_actuals   = []
     all_forecasts = []
 
     for cat in categories:
-        print(f"  [{cat}] loading demand...", end=" ", flush=True)
-        df_actual = load_daily_demand(cat)
-
-        print("fitting Prophet...", end=" ", flush=True)
-        forecast = run_prophet(df_actual)
+        print(f"  [{cat}] loading demand + fitting Prophet...", end=" ", flush=True)
+        df_actual, forecast = run_prophet(engine, cat)
 
         actuals_row = df_actual.copy()
         actuals_row["category"] = cat
@@ -128,7 +90,7 @@ def main():
     print(f"\nSaved:")
     print(f"  {actuals_path}   ({len(actuals_df):,} rows)")
     print(f"  {forecast_path}  ({len(forecast_df):,} rows)")
-    print(f"  {policy_path}    (unchanged)")
+    print(f"  {policy_path}    (unchanged — re-run inventory_optimization.py to refresh)")
     print("\nAll deployment CSVs ready.")
     print("Next: git add dashboards/inventory_policy.csv dashboards/forecast_data.csv dashboards/actuals_data.csv && git push")
 
