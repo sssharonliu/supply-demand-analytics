@@ -31,21 +31,24 @@ The system operates in two analytical modes:
 
 ### Inventory Policy Model
 
-The system implements a **continuous review inventory policy** with statistically derived safety stock targets. The core formula applied in Phase 2:
+The system implements a **continuous review inventory policy** with statistically derived safety stock targets. The core formula applied in Phase 2 is the **combined-variance model** (Nahmias & Olsen), which accounts for both demand uncertainty and lead-time uncertainty simultaneously:
 
-$$Safety\ Stock = Z \times \sigma_{demand} \times \sqrt{Lead\ Time}$$
+$$Safety\ Stock = Z \times \sqrt{\sigma^2_{demand} \times \mu_{LT} \ + \ \mu^2_{demand} \times \sigma^2_{LT}}$$
 
 | Parameter | Value | Rationale |
 |---|---|---|
 | $Z$ | **1.645** | Targets a **95% Service Level** — the optimal balance between stockout risk and excess carrying cost for a mid-volatility portfolio |
-| $\sigma_{demand}$ | Per-category monthly demand standard deviation, derived from historical order data | |
-| $\sqrt{Lead\ Time}$ | Square root of average supplier lead time (days), reflecting how variability compounds over longer replenishment cycles | |
+| $\sigma_{demand}$ | Per-category daily demand standard deviation, derived from historical order data | |
+| $\mu_{LT}$ | Average actual lead time (days) per category | |
+| $\sigma_{LT}$ | Standard deviation of actual lead time per category — captures supplier unreliability |
+
+> **Why not the simpler formula $Z \times \sigma_{demand} \times \sqrt{\mu_{LT}}$?** That formula assumes lead time is deterministic. This dataset has a **79.8% late delivery rate** for Second Class shipping, meaning $\sigma_{LT}$ is material. Ignoring it systematically underestimates safety stock for categories routed through unreliable carriers. The combined-variance model reduces exactly to the simple formula when $\sigma_{LT} = 0$.
 
 The **Reorder Point (ROP)** is then calculated as:
 
-$$ROP = \overline{d} \times L + Safety\ Stock$$
+$$ROP = \mu_{demand} \times \mu_{LT} + Safety\ Stock$$
 
-Where $\overline{d}$ is average daily demand and $L$ is the average lead time in days. This gives procurement teams a precise trigger point to initiate replenishment before a stockout occurs.
+Where $\mu_{demand}$ is average daily demand and $\mu_{LT}$ is the average lead time in days. This gives procurement teams a precise trigger point to initiate replenishment before a stockout occurs.
 
 ---
 
@@ -122,7 +125,7 @@ This analysis reveals a clear bifurcation in the portfolio. **Cameras** emerge a
 **Executive Summary:**
 Supply reliability is the second variable in the Safety Stock equation — and this analysis uncovers a critical vulnerability. **Second Class shipping carries a 79.8% late delivery rate** across all completed orders, meaning that for nearly four in five shipments, actual transit time exceeded the scheduled lead time used in procurement planning.
 
-This has a direct and computable impact on inventory policy. When lead time is unreliable, the $\sqrt{Lead\ Time}$ term in the safety stock formula must be adjusted to reflect *actual* lead time variance, not scheduled lead time. Using the planned figure systematically underestimates safety stock requirements for any category routed through Second Class. Operationally, this finding warrants one of two responses: **carrier SLA renegotiation** with updated lead time commitments, or a **modal shift** for high-velocity, high-volatility SKUs to a more reliable shipping tier. Either path reduces the safety stock uplift required to maintain the 95% service level target.
+This has a direct and computable impact on inventory policy. The system's safety stock engine uses the **combined-variance formula**, which incorporates $\sigma_{LT}$ (lead-time standard deviation) per category alongside demand variance — so the 79.8% late-delivery rate is captured in the calculation rather than ignored. Categories routed through Second Class automatically receive higher safety stock targets reflecting their supplier's actual unreliability. Operationally, this finding also warrants one of two strategic responses: **carrier SLA renegotiation** with updated lead time commitments, or a **modal shift** for high-velocity, high-volatility SKUs to a more reliable shipping tier. Either path reduces $\sigma_{LT}$, directly lowering the safety stock required to hold the 95% service level.
 
 ---
 
@@ -179,13 +182,18 @@ Supply-Demand-Analytics/
 │   └── 02_supply_reliability.sql
 ├── logs/                                 # Ingestion logs (not tracked in git)
 ├── notebooks/                            # Exploratory analysis
-├── config.py                             # Shared DB credentials & engine factory
+├── config.py                             # Shared DB credentials, engine factory & constants
+├── data.py                               # Shared DB query helpers (fetch_daily_demand, etc.)
 ├── ingest_data.py                        # ETL pipeline
 ├── visualize_insights.py                 # BI dashboard engine (Charts 01–03)
 ├── inventory_optimization.py             # Inventory policy engine (Chart 04 + CSV)
 ├── demand_forecasting.py                 # Prophet demand forecast (Charts 05–06)
 ├── dashboard.py                          # Phase 3 Streamlit dashboard
+├── prepare_deployment.py                 # Pre-computes CSVs for Streamlit Cloud
 ├── run_all.py                            # Full pipeline orchestrator
+├── tests/                                # Unit tests (pytest)
+│   ├── test_inventory_optimization.py    # Safety stock formula, ROP identity, edge cases
+│   └── test_ingest_data.py              # Validation, cleaning, column normalisation
 ├── requirements.txt                      # Pinned dependencies
 ├── .env                                  # Credentials (not tracked in git)
 └── .env.example                          # Credentials template
@@ -213,7 +221,7 @@ Supply-Demand-Analytics/
 - Automated BI dashboards with business insight annotations
 
 ### Phase 2 — Prescriptive Inventory Policy ✅ *(complete)*
-- **Safety Stock Optimization** — per-category targets using $Z \times \sigma_{demand} \times \sqrt{Lead\ Time}$
+- **Safety Stock Optimization** — per-category targets using combined-variance model $Z \times \sqrt{\sigma^2_d \cdot \mu_{LT} + \mu^2_d \cdot \sigma^2_{LT}}$, accounting for both demand and lead-time uncertainty
 - **Reorder Point (ROP) Engine** — procurement-ready stacked chart + console policy table (`inventory_optimization.py`)
 - **Demand Forecasting** — 90-day Prophet forecast with worst-case upper-bound planning line (`demand_forecasting.py`)
 
