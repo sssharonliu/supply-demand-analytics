@@ -192,6 +192,11 @@ with tab1:
 
         df = policy_df[policy_df["category_name"].isin(selected_cats)].copy()
 
+        # Guard: older CSVs (pre-formula fix) may lack std_lead_time.
+        # Default to 0, which reduces the combined formula to the simple one.
+        if "std_lead_time" not in df.columns:
+            df["std_lead_time"] = 0.0
+
         # Scale both μ_LT and σ_LT proportionally — simulates a supplier disruption
         # that shifts the entire lead-time distribution, not just its mean.
         df["adj_avg_lt"] = df["avg_lead_time"] * lt_multiplier
