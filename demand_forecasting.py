@@ -224,8 +224,9 @@ def main():
         sys.exit(1)
 
     if len(df) < 60:
-        print("  WARNING: Fewer than 60 data points available. "
-              "Forecast accuracy may be limited.", file=sys.stderr)
+        print(f"  ERROR: Only {len(df)} daily records found; Prophet requires at least 60 "
+              "for a reliable forecast. Aborting.", file=sys.stderr)
+        sys.exit(1)
 
     # ── Fit model & forecast ──────────────────────────────────────────────
     print(f"Fitting Prophet model and forecasting {FORECAST_DAYS} days ahead...")

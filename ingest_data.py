@@ -2,8 +2,7 @@ import os
 import sys
 import logging
 import pandas as pd
-from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+from sqlalchemy import text
 
 # ── Working directory ─────────────────────────────────────────────────────────
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -21,12 +20,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Credentials ───────────────────────────────────────────────────────────────
-load_dotenv()
-DB_USER     = os.getenv("DB_USER",     "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-DB_HOST     = os.getenv("DB_HOST",     "localhost")
-DB_NAME     = os.getenv("DB_NAME",     "supply_chain_db")
+from config import get_engine, DB_NAME, DB_USER, DB_HOST
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 CSV_PATH   = "data/raw/DataCoSupplyChainDataset.csv"
@@ -154,6 +148,16 @@ def validate_source(df: pd.DataFrame):
         elif null_pct > 0:
             log.info("  '%s': %.1f%% null (acceptable).", col, null_pct)
 
+    # Negative values in numeric columns that must be non-negative
+    for col in ("order_item_quantity", "days_for_shipping_real", "days_for_shipment_scheduled"):
+        if col in df.columns:
+            neg_count = (df[col] < 0).sum()
+            if neg_count:
+                raise ValueError(
+                    f"'{col}' has {neg_count:,} negative values — "
+                    "likely a data corruption issue. Fix the source CSV before ingesting."
+                )
+
     # Duplicate order IDs
     if ORDER_ID_COLUMN in df.columns:
         dupes = df[ORDER_ID_COLUMN].duplicated().sum()
@@ -170,11 +174,6 @@ def validate_source(df: pd.DataFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Ingest
 # ─────────────────────────────────────────────────────────────────────────────
-
-def get_engine():
-    url = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
-    return create_engine(url, pool_pre_ping=True)
-
 
 def ingest(engine, df: pd.DataFrame):
     """

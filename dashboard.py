@@ -35,6 +35,9 @@ ACTUALS_CSV  = os.path.join(OUTPUT_DIR, "actuals_data.csv")
 # True when pre-computed CSVs are present (Streamlit Cloud path)
 _CSV_MODE = os.path.exists(FORECAST_CSV) and os.path.exists(ACTUALS_CSV)
 
+# Warn users when pre-computed CSVs are older than this many days
+_STALE_DAYS = 7
+
 # Z-score lookup for service level selector
 Z_MAP = {"90%": 1.282, "95%": 1.645, "99%": 2.326}
 
@@ -53,6 +56,19 @@ st.caption(
     "End-to-End Inventory Optimization & Risk Mitigation · "
     "180,519 order records · DataCo Smart Supply Chain Dataset"
 )
+
+# Warn when pre-computed CSVs are stale (Streamlit Cloud only)
+if _CSV_MODE:
+    import datetime
+    csv_mtime = os.path.getmtime(FORECAST_CSV)
+    age_days = (datetime.datetime.now().timestamp() - csv_mtime) / 86400
+    if age_days > _STALE_DAYS:
+        st.warning(
+            f"⚠️ Pre-computed data is **{int(age_days)} days old**. "
+            "Forecasts and inventory policies may be outdated. "
+            "Run `python prepare_deployment.py` locally and push to refresh.",
+            icon="⚠️",
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cached data loaders

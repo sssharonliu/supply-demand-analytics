@@ -208,7 +208,7 @@ def print_policy_table(policy: pd.DataFrame):
 
     print()
     print(divider)
-    print("  INVENTORY POLICY RECOMMENDATIONS  (95% Service Level · Z = 1.645)")
+    print(f"  INVENTORY POLICY RECOMMENDATIONS  (95% Service Level · Z = {Z_SCORE})")
     print(divider)
     header_row = (
         f"  {headers[0]:<{col_w[0]}}"
